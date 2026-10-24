@@ -22,6 +22,7 @@ import com.example.sheshield.data.SosPrefs
 import com.example.sheshield.data.SosState
 import com.example.sheshield.service.SosService
 import com.example.sheshield.ui.ContactsScreen
+import com.example.sheshield.ui.HelplinesScreen
 import com.example.sheshield.ui.OnboardingScreen
 
 object Routes {
@@ -57,7 +58,7 @@ fun AppNav() {
         }
         composable(Routes.CONTACTS) { ContactsScreen() }
         composable(Routes.VAULT) { Placeholder("Evidence vault") }
-        composable(Routes.HELPLINES) { Placeholder("Helplines") }
+        composable(Routes.HELPLINES) { HelplinesScreen() }
         composable(Routes.ROUTES) { Placeholder("Safe route planner") }
     }
 }
