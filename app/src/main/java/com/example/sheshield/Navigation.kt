@@ -1,18 +1,26 @@
 package com.example.sheshield
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.sheshield.data.ContactStore
+import com.example.sheshield.data.SosPhase
+import com.example.sheshield.data.SosPrefs
+import com.example.sheshield.data.SosState
+import com.example.sheshield.service.SosService
 import com.example.sheshield.ui.ContactsScreen
 import com.example.sheshield.ui.OnboardingScreen
 
@@ -24,6 +32,11 @@ object Routes {
     const val HELPLINES = "helplines"
     const val ROUTES = "routes"
 }
+
+private val REQUIRED_PERMS = arrayOf(
+    Manifest.permission.ACCESS_FINE_LOCATION,
+    Manifest.permission.SEND_SMS
+)
 
 @Composable
 fun AppNav() {
@@ -51,19 +64,88 @@ fun AppNav() {
 
 @Composable
 fun HomeScreen(nav: NavController) {
+    val context = LocalContext.current
+    val phase by SosState.phase.collectAsState()
+    val seconds by SosState.secondsLeft.collectAsState()
+    val prefs = remember { SosPrefs(context) }
+    var sensitivity by remember { mutableFloatStateOf(prefs.sensitivity) }
+    var message by remember { mutableStateOf<String?>(null) }
+
+    fun hasPerms() = REQUIRED_PERMS.all {
+        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+    }
+
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        if (result.values.all { it }) {
+            SosService.start(context, SosService.ACTION_MONITOR)
+            message = "Permissions granted. Press SOS again."
+        } else {
+            message = "Location and SMS permission are needed for SOS."
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (hasPerms()) SosService.start(context, SosService.ACTION_MONITOR)
+    }
+
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically)
     ) {
         Text("SheShield", style = MaterialTheme.typography.headlineLarge)
-        Button(onClick = { /* SOS comes later */ }, modifier = Modifier.fillMaxWidth().height(80.dp)) {
-            Text("SOS")
+
+        when (phase) {
+            SosPhase.IDLE -> Button(
+                onClick = {
+                    if (ContactStore(context).load().isEmpty()) {
+                        message = "Add at least one trusted contact first."
+                    } else if (!hasPerms()) {
+                        permLauncher.launch(REQUIRED_PERMS)
+                    } else {
+                        message = null
+                        SosService.start(context, SosService.ACTION_TRIGGER)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(80.dp)
+            ) { Text("SOS") }
+
+            SosPhase.COUNTDOWN -> {
+                Text("Sending SOS in $seconds...", style = MaterialTheme.typography.titleLarge)
+                Button(
+                    onClick = { SosService.start(context, SosService.ACTION_CANCEL) },
+                    modifier = Modifier.fillMaxWidth().height(80.dp)
+                ) { Text("Cancel") }
+            }
+
+            SosPhase.ACTIVE -> {
+                Text(
+                    "SOS is active. Your contacts get your location every 60 seconds.",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Button(
+                    onClick = { SosService.start(context, SosService.ACTION_SAFE) },
+                    modifier = Modifier.fillMaxWidth().height(80.dp)
+                ) { Text("I'm safe") }
+            }
         }
+
+        message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+
         OutlinedButton(onClick = { nav.navigate(Routes.ROUTES) }, modifier = Modifier.fillMaxWidth()) { Text("Plan a safe route") }
         OutlinedButton(onClick = { nav.navigate(Routes.CONTACTS) }, modifier = Modifier.fillMaxWidth()) { Text("Trusted contacts") }
         OutlinedButton(onClick = { nav.navigate(Routes.VAULT) }, modifier = Modifier.fillMaxWidth()) { Text("Evidence vault") }
         OutlinedButton(onClick = { nav.navigate(Routes.HELPLINES) }, modifier = Modifier.fillMaxWidth()) { Text("Helplines") }
+
+        Spacer(Modifier.height(8.dp))
+        Text("Shake sensitivity (left: low, right: high)", style = MaterialTheme.typography.bodyMedium)
+        Slider(
+            value = sensitivity,
+            onValueChange = { sensitivity = it },
+            onValueChangeFinished = { prefs.sensitivity = sensitivity }
+        )
     }
 }
 
