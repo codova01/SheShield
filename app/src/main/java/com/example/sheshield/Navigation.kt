@@ -24,6 +24,7 @@ import com.example.sheshield.service.SosService
 import com.example.sheshield.ui.ContactsScreen
 import com.example.sheshield.ui.HelplinesScreen
 import com.example.sheshield.ui.OnboardingScreen
+import com.example.sheshield.ui.PlanTripScreen
 
 object Routes {
     const val ONBOARDING = "onboarding"
@@ -59,7 +60,7 @@ fun AppNav() {
         composable(Routes.CONTACTS) { ContactsScreen() }
         composable(Routes.VAULT) { Placeholder("Evidence vault") }
         composable(Routes.HELPLINES) { HelplinesScreen() }
-        composable(Routes.ROUTES) { Placeholder("Safe route planner") }
+        composable(Routes.ROUTES) { PlanTripScreen() }
     }
 }
 

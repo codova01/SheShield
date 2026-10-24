@@ -1,6 +1,7 @@
 package com.example.sheshield.service
 
 import android.Manifest
+import android.R
 import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
@@ -66,7 +67,7 @@ class SosService : Service() {
     override fun onCreate() {
         super.onCreate()
         fused = LocationServices.getFusedLocationProviderClient(this)
-        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         val channel = NotificationChannel(
             CHANNEL_ID, "Background service", NotificationManager.IMPORTANCE_LOW
         ).apply { lockscreenVisibility = Notification.VISIBILITY_SECRET }
@@ -219,7 +220,7 @@ class SosService : Service() {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("System service")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_menu_info_details)
+            .setSmallIcon(R.drawable.ic_menu_info_details)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openApp)
