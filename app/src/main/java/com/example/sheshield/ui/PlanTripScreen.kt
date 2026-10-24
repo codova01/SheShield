@@ -20,8 +20,11 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.sheshield.data.DemoPlace
 import com.example.sheshield.data.DemoPlaces
+import com.example.sheshield.data.RouteAnalyzer
+import com.example.sheshield.data.RouteContext
 import com.example.sheshield.data.RouteOption
 import com.example.sheshield.data.RoutingClient
+import com.example.sheshield.data.SafetyScorer
 import com.example.sheshield.data.TransportMode
 import com.example.sheshield.data.TripRequest
 import com.example.sheshield.data.TripState
@@ -32,7 +35,9 @@ import kotlinx.coroutines.launch
 import org.osmdroid.util.GeoPoint
 import java.util.Calendar
 
-private val routeColors = listOf(Color(0xFF2E7D32), Color(0xFFEF6C00), Color(0xFF1565C0))
+// Best route is green, middle is orange, worst is red
+private val rankColors = listOf(Color(0xFF2E7D32), Color(0xFFEF6C00), Color(0xFFC62828))
+private fun colorForRank(rank: Int) = rankColors[minOf(rank, rankColors.lastIndex)]
 
 @SuppressLint("MissingPermission")
 private fun fetchLocation(context: Context, onResult: (GeoPoint?) -> Unit) {
@@ -79,6 +84,7 @@ fun PlanTripScreen() {
     var startMenuOpen by remember { mutableStateOf(false) }
 
     var routes by remember { mutableStateOf<List<RouteOption>>(emptyList()) }
+    var contexts by remember { mutableStateOf<List<RouteContext?>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var routeError by remember { mutableStateOf<String?>(null) }
 
@@ -89,14 +95,16 @@ fun PlanTripScreen() {
     val startPoint: GeoPoint? = startPlace?.let { GeoPoint(it.lat, it.lng) } ?: userLoc
     val startLabel = startPlace?.name ?: "My current location"
 
+    val scored = remember(routes, contexts, hour, mode, alone) {
+        SafetyScorer.scoreAll(routes, contexts, hour, mode, alone)
+    }
+
     Column(Modifier.fillMaxSize()) {
         OsmMap(
             modifier = Modifier.fillMaxWidth().height(240.dp),
             userLocation = startPoint,
             destination = selected?.let { GeoPoint(it.lat, it.lng) },
-            routes = routes.mapIndexed { i, r ->
-                MapRoute(r.points, routeColors[i % routeColors.size].toArgb())
-            }
+            routes = scored.map { MapRoute(it.route.points, colorForRank(it.rank).toArgb()) }
         )
 
         Column(
@@ -124,6 +132,7 @@ fun PlanTripScreen() {
                             onClick = {
                                 startPlace = null
                                 routes = emptyList()
+                                contexts = emptyList()
                                 startMenuOpen = false
                             }
                         )
@@ -134,6 +143,7 @@ fun PlanTripScreen() {
                             onClick = {
                                 startPlace = p
                                 routes = emptyList()
+                                contexts = emptyList()
                                 startMenuOpen = false
                             }
                         )
@@ -143,7 +153,12 @@ fun PlanTripScreen() {
 
             OutlinedTextField(
                 value = query,
-                onValueChange = { query = it; selected = null; routes = emptyList() },
+                onValueChange = {
+                    query = it
+                    selected = null
+                    routes = emptyList()
+                    contexts = emptyList()
+                },
                 label = { Text("Where are you going?") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
@@ -176,7 +191,7 @@ fun PlanTripScreen() {
 
             Text("How are you travelling?", style = MaterialTheme.typography.labelLarge)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                TransportMode.values().forEach { m ->
+                TransportMode.entries.forEach { m ->
                     val mod = Modifier.weight(1f)
                     if (m == mode) {
                         Button(
@@ -186,7 +201,7 @@ fun PlanTripScreen() {
                         ) { Text(m.label, maxLines = 1) }
                     } else {
                         OutlinedButton(
-                            onClick = { mode = m; routes = emptyList() },
+                            onClick = { mode = m },
                             modifier = mod,
                             contentPadding = PaddingValues(0.dp)
                         ) { Text(m.label, maxLines = 1) }
@@ -215,10 +230,12 @@ fun PlanTripScreen() {
                             walking = mode == TransportMode.WALKING
                         )
                         routes = result
+                        contexts = if (result.isEmpty()) emptyList()
+                        else result.map { RouteAnalyzer.analyze(context.applicationContext, it) }
                         if (result.isEmpty()) {
                             routeError = "Couldn't get routes. Check your internet connection and try again."
                         } else {
-                            status = "${result.size} route(s) from $startLabel to ${dest.name} at ${formatTime(hour, minute)}. Safety scores come next."
+                            status = "${result.size} route(s) from $startLabel to ${dest.name} for ${formatTime(hour, minute)}."
                         }
                         loading = false
                     }
@@ -236,12 +253,25 @@ fun PlanTripScreen() {
 
             status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
 
-            routes.forEachIndexed { i, r ->
-                Text(
-                    "Route ${i + 1}: %.1f km, %d min".format(r.distanceM / 1000, (r.durationS / 60).toInt()),
-                    color = routeColors[i % routeColors.size],
-                    style = MaterialTheme.typography.titleMedium
-                )
+            scored.sortedBy { it.rank }.forEach { s ->
+                val color = colorForRank(s.rank)
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            "Route ${s.index + 1} · Safety ${s.score}/100" +
+                                    if (s.rank == 0) " · Recommended" else "",
+                            color = color,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            "%.1f km · %d min".format(s.route.distanceM / 1000, (s.route.durationS / 60).toInt()),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        s.reasons.forEach { reason ->
+                            Text("• $reason", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
             }
         }
     }
