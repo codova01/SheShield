@@ -18,16 +18,20 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.sheshield.data.ContactStore
 import com.example.sheshield.data.DemoPlace
 import com.example.sheshield.data.DemoPlaces
+import com.example.sheshield.data.ReportStore
 import com.example.sheshield.data.RouteAnalyzer
 import com.example.sheshield.data.RouteContext
 import com.example.sheshield.data.RouteOption
 import com.example.sheshield.data.RoutingClient
 import com.example.sheshield.data.SafetyScorer
+import com.example.sheshield.data.ScoredRoute
 import com.example.sheshield.data.TransportMode
 import com.example.sheshield.data.TripRequest
 import com.example.sheshield.data.TripState
+import com.example.sheshield.service.SmsHelper
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
@@ -62,6 +66,41 @@ private fun formatTime(hour: Int, minute: Int): String {
     return "%d:%02d %s".format(h12, minute, ampm)
 }
 
+/** Sends the trip details and a Google Maps link to every trusted contact. Returns a message for the screen. */
+private fun shareTrip(
+    context: Context,
+    startLabel: String,
+    from: GeoPoint,
+    dest: DemoPlace,
+    mode: TransportMode,
+    best: ScoredRoute,
+    hour: Int,
+    minute: Int
+): String {
+    val contacts = ContactStore(context).load()
+    if (contacts.isEmpty()) return "Add trusted contacts first, then try again."
+    val granted = ContextCompat.checkSelfPermission(
+        context, Manifest.permission.SEND_SMS
+    ) == PackageManager.PERMISSION_GRANTED
+    if (!granted) return "SMS permission is off. Allow SMS for SheShield in phone settings to share trips."
+
+    val travelMode = when (mode) {
+        TransportMode.CAB, TransportMode.AUTO -> "driving"
+        TransportMode.METRO -> "transit"
+        TransportMode.WALKING -> "walking"
+    }
+    val link = "https://www.google.com/maps/dir/?api=1" +
+            "&origin=${from.latitude},${from.longitude}" +
+            "&destination=${dest.lat},${dest.lng}&travelmode=$travelMode"
+    val minutes = (best.route.durationS / 60).toInt()
+    val km = "%.1f".format(best.route.distanceM / 1000)
+    val text = "SheShield trip share: I'm going from $startLabel to ${dest.name} by ${mode.label.lowercase()}. " +
+            "ETA about $minutes min ($km km), planned for ${formatTime(hour, minute)}. " +
+            "Route safety score ${best.score}/100. Follow the route: $link"
+    contacts.forEach { SmsHelper.send(context, it.phone, text) }
+    return "Trip shared with ${contacts.size} trusted contact(s)."
+}
+
 @Composable
 fun PlanTripScreen() {
     val context = LocalContext.current
@@ -88,6 +127,13 @@ fun PlanTripScreen() {
     var loading by remember { mutableStateOf(false) }
     var routeError by remember { mutableStateOf<String?>(null) }
 
+    var showFeedback by remember { mutableStateOf(false) }
+    var feedbackMsg by remember { mutableStateOf<String?>(null) }
+    var shareMsg by remember { mutableStateOf<String?>(null) }
+
+    // Changes whenever a report is added, so warnings and scores update live
+    val reportVersion by ReportStore.version.collectAsState()
+
     LaunchedEffect(Unit) {
         fetchLocation(context) { userLoc = it }
     }
@@ -95,8 +141,29 @@ fun PlanTripScreen() {
     val startPoint: GeoPoint? = startPlace?.let { GeoPoint(it.lat, it.lng) } ?: userLoc
     val startLabel = startPlace?.name ?: "My current location"
 
-    val scored = remember(routes, contexts, hour, mode, alone) {
-        SafetyScorer.scoreAll(routes, contexts, hour, mode, alone)
+    val routeReports = remember(routes, hour, reportVersion) {
+        routes.map { ReportStore.summarize(it.points, hour, 150.0) }
+    }
+    val destReports = remember(selected, hour, reportVersion) {
+        selected?.let { ReportStore.summarizeAround(GeoPoint(it.lat, it.lng), hour) }
+    }
+    val scored = remember(routes, contexts, routeReports, hour, mode, alone) {
+        SafetyScorer.scoreAll(routes, contexts, routeReports, hour, mode, alone)
+    }
+
+    if (showFeedback) {
+        val dest = selected
+        if (dest != null) {
+            FeedbackDialog(
+                destName = dest.name,
+                onDismiss = { showFeedback = false },
+                onSubmit = { category ->
+                    ReportStore.add(category, dest.lat, dest.lng, hour)
+                    showFeedback = false
+                    feedbackMsg = "Thanks. Your anonymous feedback is saved on this phone and the warnings have updated."
+                }
+            )
+        }
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -158,6 +225,8 @@ fun PlanTripScreen() {
                     selected = null
                     routes = emptyList()
                     contexts = emptyList()
+                    feedbackMsg = null
+                    shareMsg = null
                 },
                 label = { Text("Where are you going?") },
                 singleLine = true,
@@ -176,6 +245,11 @@ fun PlanTripScreen() {
                             .padding(vertical = 10.dp)
                     )
                 }
+            }
+
+            // Community warning for the destination (step 34)
+            selected?.let { dest ->
+                CommunityWarningCard("Community reports near ${dest.name}", destReports)
             }
 
             OutlinedButton(
@@ -222,6 +296,7 @@ fun PlanTripScreen() {
                     TripState.set(TripRequest(dest, hour, minute, mode, alone))
                     status = null
                     routeError = null
+                    shareMsg = null
                     loading = true
                     scope.launch {
                         val result = RoutingClient.fetchRoutes(
@@ -267,10 +342,45 @@ fun PlanTripScreen() {
                             "%.1f km · %d min".format(s.route.distanceM / 1000, (s.route.durationS / 60).toInt()),
                             style = MaterialTheme.typography.bodyMedium
                         )
+                        // Community warning on the route (step 34)
+                        s.reports?.warningText()?.let { w ->
+                            Text(w, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
                         s.reasons.forEach { reason ->
                             Text("• $reason", style = MaterialTheme.typography.bodySmall)
                         }
                     }
+                }
+            }
+
+            // Cab tips and share trip (step 31)
+            if (scored.isNotEmpty()) {
+                if (mode == TransportMode.CAB || mode == TransportMode.AUTO) {
+                    CabTipsCard()
+                }
+                Button(
+                    onClick = {
+                        val dest = selected
+                        val from = startPoint
+                        val best = scored.minByOrNull { it.rank }
+                        if (dest != null && from != null && best != null) {
+                            shareMsg = shareTrip(context, startLabel, from, dest, mode, best, hour, minute)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(52.dp)
+                ) { Text("Share this trip with trusted contacts") }
+                shareMsg?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            }
+
+            // Post-visit feedback (step 35)
+            if (selected != null) {
+                OutlinedButton(
+                    onClick = { showFeedback = true },
+                    modifier = Modifier.fillMaxWidth().height(52.dp)
+                ) { Text("After your visit: how was it?") }
+                feedbackMsg?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                TextButton(onClick = { ReportStore.resetMine(); feedbackMsg = "Demo feedback cleared." }) {
+                    Text("Reset demo feedback")
                 }
             }
         }
