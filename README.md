@@ -6,12 +6,7 @@ SheShield is a privacy-first women's safety app for Android. It covers the whole
 
 Built for **recHERsion 2026** (Problem Statement 2: Women's Safety). Native Android, Kotlin and Jetpack Compose.
 
-- Demo video: _link to be added_
-- Presentation: _link to be added_
-- Debug APK: see the **Releases** page of this repository
-
 ---
-
 ## The problem
 
 Safety tools usually fix only one moment. Route apps pick the fastest road, not the safest one, and never say why. SOS apps often need the app open, an internet connection, or a visible button. After an incident, evidence is scattered across screenshots and memories, and writing a complaint from scratch is hard when you are shaken. Many apps also ask women to create accounts and upload sensitive data to a server.
