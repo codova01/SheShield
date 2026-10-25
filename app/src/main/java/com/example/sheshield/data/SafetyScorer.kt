@@ -12,7 +12,10 @@ data class ScoredRoute(
     val score: Int,          // 0 to 100, higher is safer
     val reasons: List<String>,
     val rank: Int            // 0 = safest
-)
+) {
+    /** False when the map analysis failed and the score is only a rough fallback. */
+    val analysed: Boolean get() = context != null
+}
 
 object SafetyScorer {
 
@@ -73,8 +76,9 @@ object SafetyScorer {
         val reasons = mutableListOf<String>()
         var s: Double
 
-        if (c == null) {
-            reasons.add("Detailed map data couldn't be loaded, so this score uses time of day, transport mode, whether you're alone and community reports.")
+        if (c == null) {if (n >= 0.6) reasons.add("Late evening or night: score is lowered because fewer people are around")
+            reasons.add("Travelling by ${mode.name.lowercase()} is factored into the score")
+            if (alone) reasons.add("Travelling alone is factored into the score")
             s = 60.0 - flat - minutes * 0.05
         } else {
             val km = max(c.lengthM / 1000.0, 0.1)
@@ -93,6 +97,9 @@ object SafetyScorer {
             val help = c.police + c.hospitals + c.metroStations
             s += min(help * 3.0, 8.0)
 
+            // Ways to get away or get picked up: bus stops and auto/cab stands
+            s += min(c.busStops * 1.0 + c.autoStands * 1.5, 5.0)
+
             // Isolated stretches hurt more at night, on foot, and when alone
             val isoTotal = c.isolatedStretchesM.sum()
             s -= min(isoTotal / 60.0, 25.0) * (1 + exposure)
@@ -110,8 +117,12 @@ object SafetyScorer {
             }
             if (c.litPct >= 40) {
                 reasons.add("Street lighting is recorded along ${c.litPct}% of the route")
-            } else if (c.litPct == 0) {
-                reasons.add("Lighting data is sparse on OpenStreetMap here, so lighting isn't counted for or against this route")
+            } else if (c.litPct > 0) {
+                reasons.add("Some street lighting is recorded (${c.litPct}% of the route)")
+            } else if (c.mainRoadPct >= 60) {
+                reasons.add("Likely well lit: mostly main roads (lighting itself isn't mapped on OpenStreetMap here, so this is an estimate)")
+            } else {
+                reasons.add("Lighting isn't mapped on OpenStreetMap here, so it is not counted for or against this route")
             }
             if (c.shopsNearby > 0) {
                 reasons.add("Passes ${c.shopsNearby} shops or cafes")
@@ -123,6 +134,12 @@ object SafetyScorer {
             if (c.hospitals > 0) near.add("${c.hospitals} hospital" + if (c.hospitals > 1) "s" else "")
             if (c.metroStations > 0) near.add("${c.metroStations} metro station" + if (c.metroStations > 1) "s" else "")
             if (near.isNotEmpty()) reasons.add("Within 500 m of: " + near.joinToString(", "))
+
+            val transport = mutableListOf<String>()
+            if (c.busStops > 0) transport.add("${c.busStops} bus stop" + if (c.busStops > 1) "s" else "")
+            if (c.autoStands > 0) transport.add("${c.autoStands} auto/cab stand" + if (c.autoStands > 1) "s" else "")
+            if (transport.isNotEmpty()) reasons.add("Transport nearby: " + transport.joinToString(", "))
+
             if (c.longestIsolatedM >= 300) {
                 reasons.add("Has a ${c.longestIsolatedM} m stretch with no shops nearby")
             } else {

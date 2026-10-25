@@ -55,4 +55,5 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.9")
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("org.osmdroid:osmdroid-android:6.1.20")
+    implementation("androidx.compose.material:material-icons-extended")
 }

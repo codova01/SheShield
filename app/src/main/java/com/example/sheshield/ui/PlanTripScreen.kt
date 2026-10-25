@@ -35,6 +35,8 @@ import com.example.sheshield.service.SmsHelper
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import org.osmdroid.util.GeoPoint
 import java.util.Calendar
@@ -42,6 +44,9 @@ import java.util.Calendar
 // Best route is green, middle is orange, worst is red
 private val rankColors = listOf(Color(0xFF2E7D32), Color(0xFFEF6C00), Color(0xFFC62828))
 private fun colorForRank(rank: Int) = rankColors[minOf(rank, rankColors.lastIndex)]
+
+// How long we wait for the map-data analysis before showing what we have
+private const val ANALYSIS_BUDGET_MS = 45_000L
 
 @SuppressLint("MissingPermission")
 private fun fetchLocation(context: Context, onResult: (GeoPoint?) -> Unit) {
@@ -94,9 +99,10 @@ private fun shareTrip(
             "&destination=${dest.lat},${dest.lng}&travelmode=$travelMode"
     val minutes = (best.route.durationS / 60).toInt()
     val km = "%.1f".format(best.route.distanceM / 1000)
+    val scoreText = " Route safety score ${best.score}/100."
     val text = "SheShield trip share: I'm going from $startLabel to ${dest.name} by ${mode.label.lowercase()}. " +
-            "ETA about $minutes min ($km km), planned for ${formatTime(hour, minute)}. " +
-            "Route safety score ${best.score}/100. Follow the route: $link"
+            "ETA about $minutes min ($km km), planned for ${formatTime(hour, minute)}." +
+            "$scoreText Follow the route: $link"
     contacts.forEach { SmsHelper.send(context, it.phone, text) }
     return "Trip shared with ${contacts.size} trusted contact(s)."
 }
@@ -124,8 +130,14 @@ fun PlanTripScreen() {
 
     var routes by remember { mutableStateOf<List<RouteOption>>(emptyList()) }
     var contexts by remember { mutableStateOf<List<RouteContext?>>(emptyList()) }
+
+    // loading = fetching the routes themselves (quick). analysing = checking map data in the background.
     var loading by remember { mutableStateOf(false) }
+    var analysing by remember { mutableStateOf(false) }
     var routeError by remember { mutableStateOf<String?>(null) }
+    var routeNote by remember { mutableStateOf<String?>(null) }
+    // Bumped on every new search or reset, so a slow old search can't overwrite newer results
+    var searchId by remember { mutableIntStateOf(0) }
 
     var showFeedback by remember { mutableStateOf(false) }
     var feedbackMsg by remember { mutableStateOf<String?>(null) }
@@ -133,6 +145,17 @@ fun PlanTripScreen() {
 
     // Changes whenever a report is added, so warnings and scores update live
     val reportVersion by ReportStore.version.collectAsState()
+
+    fun clearResults() {
+        searchId++
+        routes = emptyList()
+        contexts = emptyList()
+        loading = false
+        analysing = false
+        routeError = null
+        routeNote = null
+        status = null
+    }
 
     LaunchedEffect(Unit) {
         fetchLocation(context) { userLoc = it }
@@ -198,8 +221,7 @@ fun PlanTripScreen() {
                             text = { Text("My current location") },
                             onClick = {
                                 startPlace = null
-                                routes = emptyList()
-                                contexts = emptyList()
+                                clearResults()
                                 startMenuOpen = false
                             }
                         )
@@ -209,8 +231,7 @@ fun PlanTripScreen() {
                             text = { Text(p.name) },
                             onClick = {
                                 startPlace = p
-                                routes = emptyList()
-                                contexts = emptyList()
+                                clearResults()
                                 startMenuOpen = false
                             }
                         )
@@ -223,8 +244,7 @@ fun PlanTripScreen() {
                 onValueChange = {
                     query = it
                     selected = null
-                    routes = emptyList()
-                    contexts = emptyList()
+                    clearResults()
                     feedbackMsg = null
                     shareMsg = null
                 },
@@ -294,50 +314,63 @@ fun PlanTripScreen() {
                     val dest = selected ?: return@Button
                     val from = startPoint ?: return@Button
                     TripState.set(TripRequest(dest, hour, minute, mode, alone))
-                    status = null
-                    routeError = null
+
+                    clearResults()                       // also bumps searchId
+                    val myId = searchId
                     shareMsg = null
                     loading = true
+                    val appCtx = context.applicationContext
+                    val label = startLabel
+                    val walking = mode == TransportMode.WALKING
+
                     scope.launch {
+                        // Step 1: get the routes. This is quick, and the spinner stops right after it.
                         val result = RoutingClient.fetchRoutes(
                             from = from,
                             to = GeoPoint(dest.lat, dest.lng),
-                            walking = mode == TransportMode.WALKING
+                            walking = walking
                         )
+                        if (myId != searchId) return@launch   // a newer search replaced this one
+
                         routes = result
-                        contexts = if (result.isEmpty()) emptyList()
-                        else result.map { RouteAnalyzer.analyze(context.applicationContext, it) }
+                        loading = false
+
                         if (result.isEmpty()) {
                             routeError = "Couldn't get routes. Check your internet connection and try again."
-                        } else {
-                            status = "${result.size} route(s) from $startLabel to ${dest.name} for ${formatTime(hour, minute)}."
+                            return@launch
                         }
-                        loading = false
+                        status = "${result.size} route(s) from $label to ${dest.name} for ${formatTime(hour, minute)}."
+                        if (result.size == 1) {
+                            routeNote = "Only one route is available for this trip."
+                        }
+
+
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(56.dp)
             ) { Text(if (loading) "Finding routes..." else "Find safe routes") }
-
-            if (loading) {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-            }
 
             routeError?.let {
                 Text(it, color = MaterialTheme.colorScheme.error)
             }
 
             status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            routeNote?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+
+            if (analysing) {
+                Text(
+                    "Checking lighting, shops and transport along the routes. This can take up to 30 seconds.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
 
             scored.sortedBy { it.rank }.forEach { s ->
-                val color = colorForRank(s.rank)
+                val color = if (analysing) MaterialTheme.colorScheme.primary else colorForRank(s.rank)
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            "Route ${s.index + 1} · Safety ${s.score}/100" +
-                                    if (s.rank == 0) " · Recommended" else "",
-                            color = color,
-                            style = MaterialTheme.typography.titleMedium
-                        )
+                        val title = "Route ${s.index + 1} · Safety ${s.score}/100" +
+                                if (s.rank == 0) " · Recommended" else ""
+                        Text(title, color = color, style = MaterialTheme.typography.titleMedium)
                         Text(
                             "%.1f km · %d min".format(s.route.distanceM / 1000, (s.route.durationS / 60).toInt()),
                             style = MaterialTheme.typography.bodyMedium
@@ -346,8 +379,10 @@ fun PlanTripScreen() {
                         s.reports?.warningText()?.let { w ->
                             Text(w, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                         }
-                        s.reasons.forEach { reason ->
-                            Text("• $reason", style = MaterialTheme.typography.bodySmall)
+                        if (!analysing) {
+                            s.reasons.forEach { reason ->
+                                Text("• $reason", style = MaterialTheme.typography.bodySmall)
+                            }
                         }
                     }
                 }
