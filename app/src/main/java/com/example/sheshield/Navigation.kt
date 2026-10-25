@@ -55,6 +55,7 @@ import com.example.sheshield.ui.HelplinesScreen
 import com.example.sheshield.ui.OnboardingScreen
 import com.example.sheshield.ui.PlanTripScreen
 import com.example.sheshield.ui.theme.*
+import com.example.sheshield.ui.VaultScreen
 
 object Routes {
     const val ONBOARDING = "onboarding"
@@ -95,7 +96,7 @@ fun AppNav() {
                     })
                 }
                 composable(Routes.CONTACTS) { ContactsScreen() }
-                composable(Routes.VAULT) { Placeholder("Evidence vault") }          // replaced when the vault is built
+                composable(Routes.VAULT) { VaultScreen() }         // replaced when the vault is built
                 composable(Routes.COMPLAINT) { Placeholder("Complaint generator") } // replaced when the complaint is built
                 composable(Routes.HELPLINES) { HelplinesScreen() }
                 composable(Routes.ROUTES) { PlanTripScreen() }

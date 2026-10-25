@@ -1,7 +1,6 @@
 package com.example.sheshield.service
 
 import android.Manifest
-import android.R
 import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
@@ -15,15 +14,17 @@ import android.content.pm.ServiceInfo
 import android.hardware.Sensor
 import android.hardware.SensorManager
 import android.location.Location
+import android.media.MediaRecorder
+import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
-import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.sheshield.data.ContactStore
+import com.example.sheshield.data.IncidentStore
 import com.example.sheshield.data.SosPhase
 import com.example.sheshield.data.SosPrefs
 import com.example.sheshield.data.SosState
@@ -32,6 +33,7 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.*
+import java.io.File
 import kotlin.coroutines.resume
 
 class SosService : Service() {
@@ -46,6 +48,7 @@ class SosService : Service() {
         private const val NOTIF_ID = 1
         private const val COUNTDOWN_SECONDS = 10
         private const val UPDATE_INTERVAL_MS = 60_000L
+        private const val CHUNK_MS = 30_000L
 
         fun start(context: Context, action: String) {
             val intent = Intent(context, SosService::class.java).setAction(action)
@@ -56,6 +59,8 @@ class SosService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var countdownJob: Job? = null
     private var sosJob: Job? = null
+    private var recordingJob: Job? = null
+    private var incidentId: String? = null
 
     private lateinit var fused: FusedLocationProviderClient
     private lateinit var sensorManager: SensorManager
@@ -67,7 +72,7 @@ class SosService : Service() {
     override fun onCreate() {
         super.onCreate()
         fused = LocationServices.getFusedLocationProviderClient(this)
-        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         val channel = NotificationChannel(
             CHANNEL_ID, "Background service", NotificationManager.IMPORTANCE_LOW
         ).apply { lockscreenVisibility = Notification.VISIBILITY_SECRET }
@@ -88,16 +93,44 @@ class SosService : Service() {
         return START_STICKY
     }
 
-    private fun startInForeground(n: Notification): Boolean = try {
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
-        } else {
-            startForeground(NOTIF_ID, n)
+    private fun hasMic(): Boolean = ContextCompat.checkSelfPermission(
+        this, Manifest.permission.RECORD_AUDIO
+    ) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Asks Android for a location + microphone foreground service when the microphone
+     * permission is granted. If Android refuses (for example when started from the
+     * background), it falls back to location only so SOS still works.
+     */
+    private fun startInForeground(n: Notification): Boolean {
+        if (Build.VERSION.SDK_INT < 29) {
+            return try {
+                startForeground(NOTIF_ID, n)
+                true
+            } catch (e: Exception) {
+                Log.e("SheShield", "Could not start foreground service", e)
+                false
+            }
         }
-        true
-    } catch (e: Exception) {
-        Log.e("SheShield", "Could not start foreground service", e)
-        false
+        val location = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        val withMic = if (Build.VERSION.SDK_INT >= 30 && hasMic()) {
+            location or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        } else {
+            location
+        }
+        return try {
+            startForeground(NOTIF_ID, n, withMic)
+            true
+        } catch (e: Exception) {
+            Log.w("SheShield", "Foreground start with microphone failed, retrying without it", e)
+            try {
+                startForeground(NOTIF_ID, n, location)
+                true
+            } catch (e2: Exception) {
+                Log.e("SheShield", "Could not start foreground service", e2)
+                false
+            }
+        }
     }
 
     // ---------- Shake detection ----------
@@ -145,12 +178,18 @@ class SosService : Service() {
 
     private fun startSos() {
         SosState.set(SosPhase.ACTIVE)
+        val id = IncidentStore.create(this, "SOS")
+        incidentId = id
         updateNotification(buildNotification("Alert active", ACTION_SAFE, "I'm safe"))
         vibrate(600)
+        startRecording(id)
         sosJob = scope.launch {
             var first = true
             while (isActive) {
                 val loc = getLocation()
+                incidentId?.let {
+                    IncidentStore.addPoint(this@SosService, it, loc?.latitude, loc?.longitude)
+                }
                 val link = loc?.let { "https://maps.google.com/?q=${it.latitude},${it.longitude}" }
                 val msg = when {
                     link == null && first -> "EMERGENCY! I need help. My location is unavailable right now."
@@ -158,7 +197,8 @@ class SosService : Service() {
                     first -> "EMERGENCY! I need help. My live location: $link"
                     else -> "SOS update, my location now: $link"
                 }
-                notifyContacts(msg)
+                val names = notifyContacts(msg)
+                incidentId?.let { IncidentStore.addAlerted(this@SosService, it, names) }
                 first = false
                 delay(UPDATE_INTERVAL_MS)
             }
@@ -170,15 +210,82 @@ class SosService : Service() {
         if (phase == SosPhase.IDLE) return
         countdownJob?.cancel()
         sosJob?.cancel()
+        recordingJob?.cancel()   // the last chunk is still saved
+        recordingJob = null
         SosState.set(SosPhase.IDLE)
         if (phase == SosPhase.ACTIVE) {
             notifyContacts("I'm safe now. Please ignore my earlier alert. Thank you.")
+            incidentId?.let { IncidentStore.finish(this, it) }
+            incidentId = null
         }
         updateNotification(buildNotification("Running"))
     }
 
-    private fun notifyContacts(text: String) {
-        ContactStore(this).load().forEach { SmsHelper.send(this, it.phone, text) }
+    /** Sends the text to every trusted contact and returns the names alerted. */
+    private fun notifyContacts(text: String): List<String> {
+        val contacts = ContactStore(this).load()
+        contacts.forEach { SmsHelper.send(this, it.phone, text) }
+        return contacts.map { it.name }
+    }
+
+    // ---------- Audio recording (30-second chunks) ----------
+
+    private fun startRecording(id: String) {
+        if (!hasMic()) {
+            Log.w("SheShield", "Microphone permission not granted, not recording")
+            return
+        }
+        if (recordingJob != null) return
+        recordingJob = scope.launch {
+            var part = 1
+            while (isActive) {
+                val file = File(cacheDir, "chunk_${id}_$part.m4a")
+                val ok = recordChunk(file)
+                if (file.exists() && file.length() > 0) {
+                    // Runs even if recording was just cancelled, so the last chunk is kept.
+                    withContext(NonCancellable + Dispatchers.IO) {
+                        IncidentStore.addAudio(this@SosService, id, file, "Audio part $part")
+                    }
+                } else {
+                    file.delete()
+                }
+                if (!ok) break
+                part++
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun newRecorder(): MediaRecorder =
+        if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else MediaRecorder()
+
+    /** Records one chunk. Returns true if it ran the full time, false if stopped or failed. */
+    private suspend fun recordChunk(file: File): Boolean {
+        val recorder = newRecorder()
+        var started = false
+        try {
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioEncodingBitRate(64_000)
+            recorder.setAudioSamplingRate(44_100)
+            recorder.setOutputFile(file.absolutePath)
+            recorder.prepare()
+            recorder.start()
+            started = true
+            delay(CHUNK_MS)
+            return true
+        } catch (e: CancellationException) {
+            return false
+        } catch (e: Exception) {
+            Log.e("SheShield", "Recording failed", e)
+            return false
+        } finally {
+            if (started) {
+                try { recorder.stop() } catch (e: Exception) { /* nothing was recorded */ }
+            }
+            try { recorder.release() } catch (e: Exception) { }
+        }
     }
 
     // ---------- Location ----------
@@ -220,7 +327,7 @@ class SosService : Service() {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("System service")
             .setContentText(text)
-            .setSmallIcon(R.drawable.ic_menu_info_details)
+            .setSmallIcon(android.R.drawable.ic_menu_info_details)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openApp)
@@ -256,4 +363,3 @@ class SosService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 }
-
