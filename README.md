@@ -28,11 +28,11 @@ Safety tools usually fix only one moment. Route apps pick the fastest road, not 
 
 | Home | Plan a safe route | Ranked routes and warnings |
 |---|---|---|
-| <img src="docs/screenshots/01-home.png" width="220"> | <img src="docs/screenshots/02-plan-trip.png" width="220"> | <img src="docs/screenshots/03-routes-warnings.png" width="220"> |
+| <img src="docs/screenshots/01-home.jpeg" width="220"> | <img src="docs/screenshots/02-plan-trip.jpeg" width="220"> | <img src="docs/screenshots/03-routes-warnings.jpeg" width="220"> |
 
 | SOS active | Evidence vault | Complaint |
 |---|---|---|
-| <img src="docs/screenshots/04-sos-active.png" width="220"> | <img src="docs/screenshots/05-vault.png" width="220"> | <img src="docs/screenshots/06-complaint.png" width="220"> |
+| <img src="docs/screenshots/04-sos-active.jpeg" width="220"> | <img src="docs/screenshots/05-vault.jpeg" width="220"> | <img src="docs/screenshots/06-complaint.jpeg" width="220"> |
 
 ---
 
