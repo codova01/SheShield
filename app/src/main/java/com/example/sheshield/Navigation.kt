@@ -51,6 +51,7 @@ import com.example.sheshield.data.SosPrefs
 import com.example.sheshield.data.SosState
 import com.example.sheshield.service.SosService
 import com.example.sheshield.ui.ContactsScreen
+import com.example.sheshield.ui.ComplaintScreen
 import com.example.sheshield.ui.HelplinesScreen
 import com.example.sheshield.ui.OnboardingScreen
 import com.example.sheshield.ui.PlanTripScreen
@@ -97,7 +98,7 @@ fun AppNav() {
                 }
                 composable(Routes.CONTACTS) { ContactsScreen() }
                 composable(Routes.VAULT) { VaultScreen() }         // replaced when the vault is built
-                composable(Routes.COMPLAINT) { Placeholder("Complaint generator") } // replaced when the complaint is built
+                composable(Routes.COMPLAINT) { ComplaintScreen(onOpenVault = { nav.navigate(Routes.VAULT) }) } // replaced when the complaint is built
                 composable(Routes.HELPLINES) { HelplinesScreen() }
                 composable(Routes.ROUTES) { PlanTripScreen() }
                 composable(Routes.PRIVACY) { PrivacyScreen() }
