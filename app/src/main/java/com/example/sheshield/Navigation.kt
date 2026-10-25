@@ -435,7 +435,7 @@ fun PrivacyScreen() {
             "Sent only when you choose",
             listOf(
                 "An SMS with your live location link to your trusted contacts when SOS is active, or when you press Share trip.",
-                "Start and destination points go to a public routing service (OSRM) to draw routes, and the map is loaded from OpenStreetMap."
+                "Start and destination points go to a public routing service (OSRM) to draw routes, the route path goes to the Overpass API (OpenStreetMap data) to describe its surroundings, and the map is loaded from OpenStreetMap."
             )
         )
         PrivacyCard(
